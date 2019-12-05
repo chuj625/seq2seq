@@ -1,10 +1,9 @@
 #! -*- coding: utf-8 -*-
 
 import numpy as np
-import pymongo
 from tqdm import tqdm
 import os,json
-import uniout
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import tensorflow as tf
 import keras
 from keras.layers import *
@@ -14,6 +13,9 @@ from keras import backend as K
 from keras.callbacks import Callback
 from keras.optimizers import Adam
 
+from JsonReader import read_json
+
+
 
 min_count = 32
 maxlen = 400
@@ -21,7 +23,7 @@ batch_size = 64
 epochs = 100
 char_size = 128
 z_dim = 128
-db = pymongo.MongoClient().text.thucnews # 我的数据存在mongodb中
+#db = pymongo.MongoClient().text.thucnews # 我的数据存在mongodb中
 
 
 if os.path.exists('seq2seq_config.json'):
@@ -29,7 +31,8 @@ if os.path.exists('seq2seq_config.json'):
     id2char = {int(i):j for i,j in id2char.items()}
 else:
     chars = {}
-    for a in tqdm(db.find()):
+    #for a in tqdm(db.find()):
+    for a in tqdm(read_json('data/news.json')):
         for w in a['content']: # 纯文本，不用分词
             chars[w] = chars.get(w,0) + 1
         for w in a['title']: # 纯文本，不用分词
@@ -69,7 +72,7 @@ def data_generator():
     # 数据生成器
     X,Y = [],[]
     while True:
-        for a in db.find():
+        for a in read_json('data/news.json'):
             X.append(str2id(a['content']))
             Y.append(str2id(a['title'], start_end=True))
             if len(X) == batch_size:
@@ -152,7 +155,8 @@ class OurBidirectional(OurLayer):
         """
         seq_len = K.round(K.sum(mask, 1)[:, 0])
         seq_len = K.cast(seq_len, 'int32')
-        return K.tf.reverse_sequence(x, seq_len, seq_dim=1)
+        return tf.reverse_sequence(x, seq_len, seq_dim=1)
+        # return K.tf.reverse_sequence(x, seq_len, seq_dim=1)
     def call(self, inputs):
         x, mask = inputs
         x_forward = self.reuse(self.forward_layer, x)
@@ -300,16 +304,20 @@ y = embedding(y)
 
 # encoder，双层双向LSTM
 x = LayerNormalization()(x)
-x = OurBidirectional(CuDNNLSTM(z_dim // 2, return_sequences=True))([x, x_mask])
+#x = OurBidirectional(CuDNNLSTM(z_dim // 2, return_sequences=True))([x, x_mask])
+x = OurBidirectional(LSTM(z_dim // 2, return_sequences=True))([x, x_mask])
 x = LayerNormalization()(x)
-x = OurBidirectional(CuDNNLSTM(z_dim // 2, return_sequences=True))([x, x_mask])
+#x = OurBidirectional(CuDNNLSTM(z_dim // 2, return_sequences=True))([x, x_mask])
+x = OurBidirectional(LSTM(z_dim // 2, return_sequences=True))([x, x_mask])
 x_max = Lambda(seq_maxpool)([x, x_mask])
 
 # decoder，双层单向LSTM
 y = SelfModulatedLayerNormalization(z_dim // 4)([y, x_max])
-y = CuDNNLSTM(z_dim, return_sequences=True)(y)
+#y = CuDNNLSTM(z_dim, return_sequences=True)(y)
+y = LSTM(z_dim, return_sequences=True)(y)
 y = SelfModulatedLayerNormalization(z_dim // 4)([y, x_max])
-y = CuDNNLSTM(z_dim, return_sequences=True)(y)
+#y = CuDNNLSTM(z_dim, return_sequences=True)(y)
+y = LSTM(z_dim, return_sequences=True)(y)
 y = SelfModulatedLayerNormalization(z_dim // 4)([y, x_max])
 
 # attention交互
@@ -374,8 +382,8 @@ class Evaluate(Callback):
         self.lowest = 1e10
     def on_epoch_end(self, epoch, logs=None):
         # 训练过程中观察一两个例子，显示标题质量提高的过程
-        print gen_sent(s1)
-        print gen_sent(s2)
+        print(gen_sent(s1))
+        print(gen_sent(s2))
         # 保存最优结果
         if logs['loss'] <= self.lowest:
             self.lowest = logs['loss']
